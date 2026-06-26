@@ -166,9 +166,7 @@ def generate_toolpaths(objects: dict[int,Object3D]) -> list:
         print(f"{len(all_mesh_boundaries)} mesh boundaries generated")
 
         face_groups = {a: [] for a in range(len(all_mesh_groups))} # {group id: [point rows belonging to group]}
-        for i in range(len(slice_planes)):
-            plane = slice_planes[i]
-
+        for i, plane in enumerate(slice_planes):
             for a, mesh_group in enumerate(all_mesh_groups):
                 point_row=[]
                 edge_counter = [0, 0, 0]

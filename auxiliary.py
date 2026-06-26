@@ -100,10 +100,7 @@ def vector_angle(vector_1, vector_2):
     return np.atan2(np.linalg.norm(np.cross(vector_1, vector_2)), np.dot(vector_1, vector_2))
 
 
-class Vector(Array):
-    """a 1D numpy ndarray"""
-    def __init__(self, array):
-        super().__init__(array)
+
 
 
 class Object3D:
@@ -184,7 +181,7 @@ class Object3D:
         print(f"object {self.id} parse_tri_edges(): {len(edge_tris)} edges indexed")
 
 
-    def fg_boundary_edges(self, face_groups=True) -> list[tuple[int,int]] | list[list[tuple[int,int]]]:
+    def fg_boundary_edges(self, use_face_groups=True) -> list[tuple[int,int]] | list[list[tuple[int,int]]]:
         """
         returns a list of all tri_edges.keys() whose values() have one None
         if face_groups=True, returns multiple lists of boundary tri_edges, one list for every face_group
@@ -194,7 +191,7 @@ class Object3D:
         if not self.tri_edges:
             self.parse_tri_edges()
 
-        if face_groups and self.face_groups:
+        if use_face_groups and self.face_groups:
             for face in self.face_groups:
                 face_boundary_edges= []
                 for tri in face:
@@ -206,7 +203,7 @@ class Object3D:
 
             return all_boundary_edges
 
-        elif face_groups and not self.face_groups:
+        elif use_face_groups and not self.face_groups:
             print(f"Error! Object {self.id} face_groups was empty")
 
         return []
@@ -217,6 +214,7 @@ class Triangle3D:
         self.parent = parent_object
         self.v_ids = vertex_ids
         self.support = support
+        self.face_group_id = -1
 
     def v(self, vertex: int):
         assert 0 < vertex < 4, "Error! Triangle3D.v() requires a vertex integer between 1 and 3 inclusive!"
@@ -260,6 +258,50 @@ class Triangle3D:
         return neighbors
 
 
+class GcodePoint:
+    def __init__(self, coordinate:Array, parent_edge:tuple[int,int], parent_object3d:Object3D, face_group_id:int=-1):
+        self.coordinate = coordinate
+        self.parent_edge = parent_edge
+        self.parent_object3d = parent_object3d
+        self.neighbor_tris = self.parent_object3d.tri_edges[self.parent_edge]
+        self.face_group_id = self.get_face_group_id() if face_group_id == -1 else face_group_id
+        # if a face_group_id argument is provided, that will be the attribute. Else, the face_group_id will be found automatically.
+
+    def get_face_group_id(self) -> int | tuple[int, int]:
+        """Returns a GcodePoint's face_group id. If point lies on border between two face_groups, both groups' ids will be returned."""
+        fg_id_1 = self.neighbor_tris[0].face_group_id
+        fg_id_2 = self.neighbor_tris[1].face_group_id
+        if fg_id_1 == fg_id_2:
+            return fg_id_1
+        elif fg_id_1 is None:
+            return fg_id_2
+        elif fg_id_2 is None:
+            return fg_id_1
+        elif fg_id_1 != fg_id_2:
+            return fg_id_1, fg_id_2
+        else:
+            raise ValueError("auxiliary.GcodePoint.get_face_group_id(): Erroneous neighboring tri face group data")
+
+    def face_group(self) -> list[Triangle3D] | tuple[list[Triangle3D], list[Triangle3D]]:
+        """Returns the GcodePoint's face_group tri list. If point belongs to two face_groups, both lists will be returned."""
+        if isinstance(self.face_group_id, int):
+            return self.parent_object3d.face_groups[self.face_group_id]
+        elif isinstance(self.face_group_id, tuple) and len(self.face_group_id) == 2:
+            return self.parent_object3d.face_groups[self.face_group_id[0]], self.parent_object3d.face_groups[self.face_group_id[1]]
+        else:
+            raise ValueError(f"auxiliary.GcodePoint.face_group(): Invalid self.face_group_id value: {self.face_group_id}")
+
+    def is_border(self) -> bool:
+        """returns True if GcodePoint lies on an edge that touches only one tri or is shared by tris of different face_groups."""
+        if None in self.neighbor_tris:
+            # Point lies on edge that encloses only one triangle
+            return True
+        elif self.neighbor_tris[0].face_group_id != self.neighbor_tris[1].face_group_id:
+            # Point lies on edge that touches two triangles that are not of the same face group
+            return True
+        else:
+            return False
+
+
 if __name__ == "__main__":
-    print(1[0])
     print(np.array([1, "", 3]))
