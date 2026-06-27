@@ -3,6 +3,27 @@ from numpy import ndarray as Array
 
 prefs = {}
 
+def len_nested(iterable):
+    """returns the count of all non-iterable items in any form and depth of nested iterables"""
+    def is_iterable(obj):
+        try:
+            iter(obj)
+            return True
+        except TypeError:
+            return False
+
+    def helper(inp) -> int:
+        if not is_iterable(inp):
+            return 1
+        else:
+            tally = 0
+            for item in inp:
+                tally += helper(item)
+
+            return tally
+
+    return helper(iterable)
+
 def read_lines(infile):
     with open(infile, "r") as file:
         lines = file.readlines()
@@ -261,23 +282,28 @@ class GcodePoint:
         self.coordinate = coordinate
         self.parent_edge = parent_edge
         self.parent_object3d = parent_object3d
-        self.neighbor_tris = self.parent_object3d.tri_edges[self.parent_edge]
+        self.neighbor_tris = self.parent_object3d.tri_edges[self.parent_edge] #tuple[Triangle3D, Triangle3D | None]
         self.face_group_id = self.get_face_group_id() if face_group_id == -1 else face_group_id
         # if a face_group_id argument is provided, that will be the attribute. Else, the face_group_id will be found automatically.
         # if found automatically, can potentially return a tuple of two face_group id's if point lies on edge between tris of two different groups.
 
+
+    def __str__(self):
+        return f"gc[{self.coordinate[0]:.4f} {self.coordinate[1]:.4f} {self.coordinate[2]:.4f}]"
+
+
     def get_face_group_id(self) -> int | tuple[int, int]:
         """Returns a GcodePoint's face_group id. If point lies on border between two face_groups, both groups' ids will be returned."""
-        fg_id_1 = self.neighbor_tris[0].face_group_id
-        fg_id_2 = self.neighbor_tris[1].face_group_id
-        if fg_id_1 == fg_id_2:
-            return fg_id_1
-        elif fg_id_1 is None:
-            return fg_id_2
-        elif fg_id_2 is None:
-            return fg_id_1
-        elif fg_id_1 != fg_id_2:
-            return fg_id_1, fg_id_2
+        tri_1 = self.neighbor_tris[0]
+        tri_2 = self.neighbor_tris[1]
+        if tri_1 == tri_2:
+            return tri_1.face_group_id
+        elif tri_1 is None:
+            return tri_2.face_group_id
+        elif tri_2 is None:
+            return tri_1
+        elif tri_1 != tri_2:
+            return tri_1.face_group_id, tri_2.face_group_id
         else:
             raise ValueError("auxiliary.GcodePoint.get_face_group_id(): Erroneous neighboring tri face group data")
 
@@ -303,4 +329,8 @@ class GcodePoint:
 
 
 if __name__ == "__main__":
-    print(np.array([1, "", 3]))
+    coso = [[1,2],[3,5,3],[[2,(1,3),4],2,2],2,5]
+    print(len_nested(coso))
+    coso_de_coso = []
+    coso_de_coso.append(["viste?","me entendes?"])
+    print(coso_de_coso)

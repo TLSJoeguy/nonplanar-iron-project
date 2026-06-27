@@ -1,14 +1,25 @@
-import math
 import numpy as np
-from auxiliary import Object3D, Triangle3D, create_rigid_transformation, rtrans, vector_angle
-
-def sort_by_x(vector: np.ndarray):
-    return float(vector[0])
+from auxiliary import Object3D, Triangle3D, GcodePoint, create_rigid_transformation, rtrans, vector_angle, len_nested
 
 
-def sort_by_y_groups(group_rows):
-    print(group_rows)
-    return float(group_rows[0][0][1])
+def sort_by_component(vector: np.ndarray | GcodePoint, component:str= "x"):
+    """use as a key for .sort(); sorts a list of 1D numerical arrays by their first element"""
+    comps = "xyz"
+    assert component in comps, "Error! sort_by_x component must be one of the following: 'x', 'y', 'z'"
+
+    if isinstance(vector, GcodePoint):
+        vector = vector.coordinate
+    return float(vector[comps.index(component)])
+
+def sort_by_component_group(group: list[np.ndarray | GcodePoint], component:str= "x", sort_by_last_vector=False):
+    """use as a key for .sort(); sorts a list of lists of 1D numerical arrays by the first element of the first array of each list"""
+    comps = "xyz"
+    assert component in comps, "Error! sort_by_x component must be one of the following: 'x', 'y', 'z'"
+
+    vector = group[-1] if sort_by_last_vector else group[0]
+    if isinstance(vector, GcodePoint):
+        vector = vector.coordinate
+    return float(vector[comps.index(component)])
 
 
 def generate_gcode(command_series:list[tuple[list, np.ndarray|None]]):
@@ -55,43 +66,35 @@ def get_min_max_y(object3d):
     return min(mesh_vertex_ys), max(mesh_vertex_ys)
 
 
-def sort_group_rows(face_groups):
-    for idx, group_rows in face_groups.items():
-        new_rows = []
-        for i, row in enumerate(group_rows):
-            if i % 2:
-                row = sorted(row, key=sort_by_x, reverse=True)
-            else:
-                row = sorted(row, key=sort_by_x)
-
-            new_rows.append(row)
-        face_groups[idx] = new_rows
-    return face_groups
-
-
-def untransform_face_groups(face_groups, rotation_matrix):
-    for idx, group_rows in face_groups.items():
-        new_rows = []
-        for row in group_rows:
-            new_row = []
-            for coordinate in row:
-                new_row.append(rtrans(rotation_matrix, coordinate, inverse=True))
-            new_rows.append(new_row)
-        face_groups[idx] = new_rows
-    return face_groups
+def untransform_face_groups(points:list[list[list[GcodePoint]]], rotation_matrix):
+    """additionally turns all GcodePoints into ndarrays"""
+    new_points = []
+    for idx, row in enumerate(points):
+        new_row = []
+        for sub_group in row:
+            new_sub_group = []
+            for coord in sub_group:
+                if isinstance(coord, GcodePoint):
+                    coord = coord.coordinate
+                new_sub_group.append(rtrans(rotation_matrix, coord, inverse=True))
+            new_row.append(new_sub_group)
+        new_points.append(new_row)
+    return new_points
 
 
-def append_gcode_commands(face_groups):
-    for idx, group in face_groups.items():
-        new_rows = []
-        for row in group:
-            row = [(["G0"], coordinate) if i == 0 else (["G1"], coordinate) for i, coordinate in enumerate(row)]
-            new_rows.append(row)
-        face_groups[idx] = new_rows
-    return face_groups
+def append_gcode_commands(points:list[list[list[GcodePoint]]]) -> list[list[list[tuple[list[str], np.ndarray]]]]:
+    new_points = []
+    for idx, row in enumerate(points):
+        new_row = []
+        for sub_group in row:
+            sub_group = [(["G0"], coordinate) if i == 0 else (["G1"], coordinate) for i, coordinate in enumerate(sub_group)] #the first coordinate of each sub_row_group is G0
+            new_row.append(sub_group)
+        new_points.append(new_row)
+    return new_points
 
 
-def add_group_outline(face_groups, mesh_boundaries, object3d):
+def add_group_outline(gcode_points: list, mesh_boundaries:list[list[tuple[int,int]]], object3d):
+    """orders mesh boundaries into continuous loops then tacks it onto the end of a gcode_points row list"""
     for i, boundary_edges in enumerate(mesh_boundaries):
         orig_len = len(boundary_edges)
         all_boundary_loops = []
@@ -109,25 +112,74 @@ def add_group_outline(face_groups, mesh_boundaries, object3d):
                 all_boundary_loops.append(ordered_edges.copy())
                 ordered_edges = [boundary_edges[0][0]] if boundary_edges else None
 
-        # assert orig_len == len(ordered_edges)-1, f"Error! add_group_outline: len(boundary_edges)={orig_len}, len(ordered_edges)={len(ordered_edges)}"
+        assert (orig_len == len_nested(all_boundary_loops)-2 and len(all_boundary_loops) == 2) or (orig_len == len_nested(all_boundary_loops)-1 and len(all_boundary_loops) == 1), f"Error! add_group_outline: len(boundary_edges)={orig_len}, len(ordered_edges)={len(ordered_edges)}"
         for j, loop in enumerate(all_boundary_loops):
             all_boundary_loops[j] = [object3d.vertices[a] for a in loop]
         print(f"group {i}: {len(all_boundary_loops)} boundaries")
         mesh_boundaries[i] = all_boundary_loops
             
     
-    for idx, group_rows in face_groups.items():
-        face_groups[idx].extend(mesh_boundaries[idx])
-
-    return face_groups
+    gcode_points.extend(mesh_boundaries)
+    return gcode_points
 
 
-def consolidate_groups(face_groups):
+def consolidate_groups(points: list[list[list[tuple[list[str], np.ndarray]]]]):
     series = []
-    for idx, group_rows in face_groups.items():
-        for row in group_rows:
-            series.extend(row)
+    for row in points:
+        for sub_group in row:
+            series.extend(sub_group)
     return series
+
+
+def create_sub_row_groups(orig_points: list[GcodePoint]) -> list[list[GcodePoint]]:
+    def of_continuous_row_group(point_1: GcodePoint, point_2: GcodePoint) -> bool:
+        """returns True if both points belong to the same face_group and are on edges that enclose the same triangle"""
+        point_1_face_group = list(point_1.face_group_id) if isinstance(point_1.face_group_id, tuple) else [point_1.face_group_id]
+        point_1_neighbors = [a for a in list(point_1.neighbor_tris) if not a is None]
+
+        point_2_face_group = list(point_2.face_group_id) if isinstance(point_2.face_group_id, tuple) else [point_2.face_group_id]
+        point_2_neighbors = [a for a in list(point_2.neighbor_tris) if not a is None]
+
+        return (point_1_face_group[0] in point_2_face_group or point_1_face_group[-1] in point_2_face_group) and (point_1_neighbors[0] in point_2_neighbors or point_1_neighbors[-1] in point_2_neighbors)
+
+    points = list(orig_points)
+    all_groups = []
+    def helper(starting_point) -> list[GcodePoint]:
+        for i, check_point in enumerate(points):
+            if of_continuous_row_group(starting_point, check_point):
+                next_point = points.pop(i)
+                return [next_point, *helper(next_point)]
+        # this point is reached once all points have been checked and none are of the same sub row group as the starting point
+        return []
+
+    while points:
+        next_point = points.pop(0)
+        all_groups.append([next_point, *helper(next_point)])
+
+    return all_groups
+
+
+def arrange_gcode_points(gcode_points: list[GcodePoint]) -> dict[float, list[list[GcodePoint]]]:
+    grouped_points = {} #{row y-value: list[list[GcodePoint]]}
+    for point in gcode_points:
+        y = point.coordinate[1]
+        if y not in grouped_points:
+            grouped_points[y] = [point]
+        else:
+            grouped_points[y].append(point)
+
+    for row_y, row_points in grouped_points.items():
+        sub_row_groups = create_sub_row_groups(row_points)
+        assert len(row_points) == len_nested(sub_row_groups), f"Error! Point count mismatch: input: {len(row_points)}, output: {len_nested(sub_row_groups)}, y={row_y}"
+        for j, sub_group in enumerate(sub_row_groups):
+            #sub_group: list[GcodePoints]
+            sub_row_groups[j].sort(key=sort_by_component) #sort sub_row_group coords by their x-value
+        sub_row_groups.sort(key=sort_by_component_group) #sort sub_row_groups by the x-value of each group's first coordinate
+
+        grouped_points[row_y] = sub_row_groups
+
+    grouped_points = dict(sorted(grouped_points.items())) #sort point rows by y
+    return grouped_points
 
 
 def generate_toolpaths(objects: dict[int,Object3D]) -> list:
@@ -154,8 +206,8 @@ def generate_toolpaths(objects: dict[int,Object3D]) -> list:
         min_y, max_y = get_min_max_y(object3d)
         print(f"Slice range: Y=({min_y}, {max_y})")
 
-        slice_planes = [i for i in np.arange(min_y + prefs["pass_spacing"] / 2, max_y, prefs["pass_spacing"])]
-        print(f"{len(slice_planes)} slice planes generated")
+        row_y_values = [i for i in np.arange(min_y + prefs["pass_spacing"] / 2, max_y, prefs["pass_spacing"])]
+        print(f"{len(row_y_values)} slice planes generated")
 
         all_mesh_groups = []
         all_mesh_boundaries = []
@@ -164,76 +216,54 @@ def generate_toolpaths(objects: dict[int,Object3D]) -> list:
             all_mesh_boundaries.append(object3d.parse_mesh(group, boundaries_only=True))
         print(f"{len(all_mesh_groups)} mesh groups generated")
         print(f"{len(all_mesh_boundaries)} mesh boundaries generated")
-
         face_groups = {a: [] for a in range(len(all_mesh_groups))} # {group id: [point rows belonging to group]}
-        for i, plane in enumerate(slice_planes):
-            for a, mesh_group in enumerate(all_mesh_groups):
-                point_row=[]
-                edge_counter = [0, 0, 0]
-                for j, edge in enumerate(mesh_group):
-                    edge = (object3d.vertices[edge[0]], object3d.vertices[edge[1]])
-                    if (edge[0][1]-plane) * (edge[1][1]-plane) > 0:
-                        # Both endpoints lie on the same side of the plane, neither on the plane
-                        # Add no points to the point series
-                        continue
 
-                    elif (edge[0][1]-plane) * (edge[1][1]-plane) < 0:
-                        #True if endpoints are on opposing sides of the plane
-                        #Add intersection of edge and plane to point series
-                        A = np.array([[1, 0, edge[0][0] - edge[1][0]],
-                                      [0, 1, edge[0][2] - edge[1][2]],
-                                      [0, 0, edge[1][1] - edge[0][1]]])
-                        b = np.array([edge[0][0], edge[0][2], plane - edge[0][1]])
-                        result = np.linalg.solve(A,b)
-                        point_row.append(np.array([result[0],plane,result[1]]))
-                        edge_counter[0] += 1
+        gcode_points = []
+        for i, edge_id in enumerate(object3d.mesh):
+            edge = (object3d.vertices[edge_id[0]], object3d.vertices[edge_id[1]])
+            if edge[0][1] == edge[1][1] and edge[0][1] in row_y_values:
+                print(f"COLLINEAR INTERSECTION FOUND")
+                gcode_points.append(GcodePoint(np.array(edge[0]), edge_id, object3d))
+                gcode_points.append(GcodePoint(np.array(edge[1]), edge_id, object3d))
+                continue
 
-                    elif np.isclose(edge[0][1]-plane, 0) and np.isclose(edge[1][1]-plane, 0):
-                        #True if both endpoints lie on the plane
-                        #Add both points to point series
-                        point_row.append(edge[0])
-                        point_row.append(edge[1])
-                        edge_counter[1] += 1
+            y_intersects = (np.array(row_y_values)[(max(edge[0][1],edge[1][1]) > np.array(row_y_values)) & (np.array(row_y_values) > min(edge[0][1],edge[1][1]))]).tolist()
+            print(f"{i}, {edge}: {y_intersects}")
+            if not y_intersects:
+                continue
+            y_intersects_idxs = range(row_y_values.index(y_intersects[0]), row_y_values.index(y_intersects[-1])+1)
+            assert len(y_intersects) == len(y_intersects_idxs), f"Error! y_intersects and y_intersects_idxs do not length match."
+            assert row_y_values[y_intersects_idxs[0]] == y_intersects[0], f"Error! y_intersect_idxs do not correlate correctly\nrow_y_values: {row_y_values[y_intersects_idxs[0]]}, y_intersects: {y_intersects[0]}"
 
-                    elif np.isclose(edge[0][1]-plane * edge[1][1]-plane, 0):
-                        #True if either endpoint lies on the plane
-                        #Add the point that lies on the plane to the point series
-                        if np.isclose(edge[0][1]-plane, 0):
-                            point_row.append(edge[0])
-                        elif np.isclose(edge[1][0]-plane, 0):
-                            point_row.append(edge[1])
-                        else:
-                            input("Congrats, you somehow broke the code. See plane generation in generate_toolpaths")
-                        edge_counter[2] += 1
+            for y in y_intersects:
+                A = np.array([[1, 0, edge[0][0] - edge[1][0]],
+                              [0, 1, edge[0][2] - edge[1][2]],
+                              [0, 0, edge[1][1] - edge[0][1]]])
+                b = np.array([edge[0][0], edge[0][2], y - edge[0][1]])
+                result = np.linalg.solve(A,b)
+                coordinate = np.array([result[0],y,result[1]])
+                gcode_points.append(GcodePoint(coordinate, edge_id, object3d))
 
-                    else:
-                        #Both endpoints lie on the same side of the plane, neither on the plane
-                        #Add no points to the point series
-                        pass
+        print(f"object {object3d.id}: {len(object3d.mesh)} edges processed, {len(gcode_points)} intersections found")
+        gcode_point_rows = arrange_gcode_points(gcode_points)
 
-                # print(f"object {object3d.id}: plane {i}/{len(slice_planes)}, Y={plane:.3f}, group={a}/{len(all_mesh_groups)}: {edge_counter[0]+edge_counter[1]+edge_counter[2]} edges: {edge_counter[0]} pierce, {edge_counter[1]} coincident, {edge_counter[2]} on-surface: {len(point_row)} points added", end="\n")
-                if point_row:
-                    face_groups[a].append(point_row)
+        gcode_points = list(gcode_point_rows.values())
 
-        print(f"object {object3d.id}: {len(face_groups)} face groups sliced")
+        #NEED TO ALTERNATE ROWS!!
 
-        face_groups = sort_group_rows(face_groups)
-        print(f"object {object3d.id}: all group_rows sorted and alternated")
-        
-        face_groups = add_group_outline(face_groups, all_mesh_boundaries, object3d)
+        gcode_points = add_group_outline(gcode_points, all_mesh_boundaries, object3d)
         print(f"object {object3d.id}: added group outlines")
 
-        face_groups = sorted(list(face_groups.values()), key=sort_by_y_groups)
-        face_groups = {i: value for i, value in enumerate(face_groups)}
-        print(f"object {object3d.id}: sorted groups by min y coords")
 
-        face_groups = untransform_face_groups(face_groups, rotation_matrix)
+        #changed gcode_points to simple arrays
+
+        gcode_points = untransform_face_groups(gcode_points, rotation_matrix)
         print(f"object {object3d.id}: untransformed point series")
 
-        face_groups = append_gcode_commands(face_groups)
+        gcode_points = append_gcode_commands(gcode_points)
         print(f"object {object3d.id}: added gcode commands to coordinates")
 
-        command_series = consolidate_groups(face_groups)
+        command_series = consolidate_groups(gcode_points)
         print(f"object {object3d.id}: consolidated all face groups into stream of commands")
 
         gcode = generate_gcode(command_series)
