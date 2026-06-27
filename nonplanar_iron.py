@@ -46,31 +46,6 @@ def evaluate_tri_normals(objects:dict[int,Object3D]):
             print(f"removed {removed.name}")
 
 
-def group_consecutive_faces(objects: dict[int,Object3D]):
-    for key, object3d in objects.items():
-        object_faces = []
-        seen_tris = []
-
-        def evaluate_edge(tri_1: Triangle3D):
-            seen_tris.append(tri_1)
-            investigation = [tri_1]
-            for tri_2 in tri_1.neighbors():
-                if not tri_2 is None and not tri_2 in seen_tris and vector_angle(tri_1.normal(), tri_2.normal()) < prefs["face_tolerance"]:
-                     investigation.extend(evaluate_edge(tri_2))
-
-            for tri_a in investigation:
-                tri_a.face_group_id = len(object_faces)
-            return investigation
-
-        while len(seen_tris) < len(object3d.tris):
-            for tri in object3d.tris:
-                if tri not in seen_tris:
-                    object_faces.append(evaluate_edge(tri))
-
-        object3d.face_groups = object_faces
-        print(f"object {object3d.id}: {len(object_faces)} face groups found")
-
-
 def main(infile, outfile):
     objects = parse_3mf(infile)
     for object3d in objects.values():
@@ -79,7 +54,7 @@ def main(infile, outfile):
     for object3d in objects.values():
         object3d.parse_tri_edges()
         object3d.parse_mesh()
-    group_consecutive_faces(objects)
+        object3d.generate_face_groups()
     gcode_lines = gcode_generation.generate_toolpaths(objects)
     write_lines(outfile, gcode_lines)
     print(f"successfully wrote: {sys.argv[2]}")

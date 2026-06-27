@@ -181,32 +181,30 @@ class Object3D:
         print(f"object {self.id} parse_tri_edges(): {len(edge_tris)} edges indexed")
 
 
-    def fg_boundary_edges(self, use_face_groups=True) -> list[tuple[int,int]] | list[list[tuple[int,int]]]:
-        """
-        returns a list of all tri_edges.keys() whose values() have one None
-        if face_groups=True, returns multiple lists of boundary tri_edges, one list for every face_group
-        *ensure tri_edges is up to date before running
-        """
-        all_boundary_edges = []
-        if not self.tri_edges:
-            self.parse_tri_edges()
+    def generate_face_groups(self):
+        """Writes a list of lists of tris to self.face_groups. Each sub-list corresponds to a continuous face determined by neighboring tris with normals within user pref 'face_tolerance' angle."""
+        object_faces = []
+        seen_tris = []
 
-        if use_face_groups and self.face_groups:
-            for face in self.face_groups:
-                face_boundary_edges= []
-                for tri in face:
-                    for edge in tri.edges(True):
-                        if None in self.tri_edges[edge] and not edge in face_boundary_edges:
-                            face_boundary_edges.append(edge)
+        def evaluate_edge(tri_1: Triangle3D):
+            seen_tris.append(tri_1)
+            investigation = [tri_1]
+            for tri_2 in tri_1.neighbors():
+                if not tri_2 is None and not tri_2 in seen_tris and vector_angle(tri_1.normal(), tri_2.normal()) < \
+                        prefs["face_tolerance"]:
+                    investigation.extend(evaluate_edge(tri_2))
 
-                all_boundary_edges.append(face_boundary_edges)
+            for tri_a in investigation:
+                tri_a.face_group_id = len(object_faces)
+            return investigation
 
-            return all_boundary_edges
+        while len(seen_tris) < len(self.tris):
+            for tri in self.tris:
+                if tri not in seen_tris:
+                    object_faces.append(evaluate_edge(tri))
 
-        elif use_face_groups and not self.face_groups:
-            print(f"Error! Object {self.id} face_groups was empty")
-
-        return []
+        self.face_groups = object_faces
+        print(f"object {self.id}: {len(object_faces)} face groups found")
 
 
 class Triangle3D:
@@ -266,6 +264,7 @@ class GcodePoint:
         self.neighbor_tris = self.parent_object3d.tri_edges[self.parent_edge]
         self.face_group_id = self.get_face_group_id() if face_group_id == -1 else face_group_id
         # if a face_group_id argument is provided, that will be the attribute. Else, the face_group_id will be found automatically.
+        # if found automatically, can potentially return a tuple of two face_group id's if point lies on edge between tris of two different groups.
 
     def get_face_group_id(self) -> int | tuple[int, int]:
         """Returns a GcodePoint's face_group id. If point lies on border between two face_groups, both groups' ids will be returned."""
